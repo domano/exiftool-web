@@ -8,6 +8,7 @@ import (
 	"strconv"
 )
 
+// TableXML is the XML structure for <table>
 type TableXML struct {
 	XMLName xml.Name `xml:"table"`
 	Text    string   `xml:",chardata"`
@@ -22,6 +23,7 @@ type TableXML struct {
 	Tag []TagXML `xml:"tag"`
 }
 
+// TagXML is the XML structure for <tag>
 type TagXML struct {
 	XMLName  xml.Name `xml:"tag"`
 	Text     string   `xml:",chardata"`
@@ -36,6 +38,7 @@ type TagXML struct {
 	} `xml:"desc"`
 }
 
+// TagJSON describes the array elements we want to output in our stream
 type TagJSON struct {
 	Writable    bool              `json:"writable"`
 	Path        string            `json:"path"`
@@ -44,32 +47,37 @@ type TagJSON struct {
 	Type        string            `json:"type"`
 }
 
+// DecodeXML will take an XML stream from in and write converted JSON to out table by table.
+// If anything goes wrong an error will be returned and nothing else will be written.
 func DecodeXML(in io.Reader, out io.Writer) error {
 	xmlDecoder := xml.NewDecoder(in)
 
-	out.Write([]byte("{\"tags\": [{")) // Write start of answer for tags array
+	out.Write([]byte("{\"tags\": [")) // Write start of answer for tags array
 
 	jsonEncoder := json.NewEncoder(out)
 
 	var finishedFirst bool // variable used to check if we need to wirte a comma before our tag
-DecoderLoop:
+DecoderLoop: // We need a named loop to break out of inner switch cases
 	for {
 		token, err := xmlDecoder.Token()
+		if err != nil && err == io.EOF {
+			_, err := out.Write([]byte("]}")) // Write end of answer for tags array
+			if err != nil {
+				return fmt.Errorf("xml decoding failed: %w", err)
+				break
+			}
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("xml decoding failed: %w", err)
 			break
 		}
 
+		// Check every start token "<" if we have a table element and decode and stream the single table.
 		switch tokenType := token.(type) {
 		case xml.StartElement:
 			switch tokenType.Name.Local {
 			case "table":
-				if finishedFirst { // write comma for every array element except for the first
-					out.Write([]byte(","))
-				} else {
-					finishedFirst = true // we can set this here, because even if the first one fails we would not continue
-				}
-
 				// Decode XML from XML Decoder
 				var table TableXML
 				err := xmlDecoder.DecodeElement(&table, &tokenType)
@@ -80,6 +88,11 @@ DecoderLoop:
 
 				// Encode all tags from table to the Writer
 				for i := range table.Tag {
+					if finishedFirst { // write comma for every array element except for the first to produce valid JSON
+						out.Write([]byte(","))
+					} else {
+						finishedFirst = true // we can set this here, because even if the first one fails we would not continue
+					}
 					tagJSON, err := tagXMLtoJson(table.Tag[i], table.Name)
 					if err != nil {
 						return fmt.Errorf("xml to json transformation failed: %w", err)
@@ -93,6 +106,7 @@ DecoderLoop:
 				}
 
 			}
+		default:
 
 		}
 
@@ -101,13 +115,14 @@ DecoderLoop:
 
 }
 
+// tagXMLtoJson converts a single tag from XML to JSON according to the given specifications.
 func tagXMLtoJson(xmlTag TagXML, tableName string) (jsonTag TagJSON, err error) {
-	var description = make(map[string]string)
+	var description = make(map[string]string) // Description is just a json object with string fields, which is basically a map.
 	for i := range xmlTag.Desc {
 		description[xmlTag.Desc[i].Lang] = xmlTag.Desc[i].Text
 	}
 
-	writable, err := strconv.ParseBool(xmlTag.Writable)
+	writable, err := strconv.ParseBool(xmlTag.Writable) // The only thing that could go wrong is the Writeable field not being true or false.
 	if err != nil {
 		return TagJSON{}, fmt.Errorf("transforming xml attribute 'writeable' to boolean failed: %w", err)
 	}
